@@ -37,6 +37,12 @@ def process_files(validation_errors, all_locations, start_date, end_date, total_
     def to_num(s):
         return pd.to_numeric(s, errors="coerce").fillna(0)
 
+    def normalize_excel_like_date(col):
+        num = pd.to_numeric(col, errors="coerce")
+        dt_excel = pd.to_datetime(num, unit="D", origin="1899-12-30", errors="coerce")
+        dt_fallback = pd.to_datetime(col, errors="coerce", dayfirst=True)
+        return dt_excel.combine_first(dt_fallback)
+
     # For Stock: handle common header variants
     STOCK_PART_COLS = ["PART NO ?", "PART NO", "PART NO.", "PART_NO", "PART NUMBER", "PART_NUMBER"]
     STOCK_QTY_COLS  = ["ON-HAND", "ON HAND", "ONHAND", "ON_HAND", "QTY", "CLOSE_QTY"]
@@ -59,7 +65,7 @@ def process_files(validation_errors, all_locations, start_date, end_date, total_
             file_path = os.path.join(location_path, file)
             if not os.path.isfile(file_path):
                 continue
-
+           # st.write(file_path)        
             fl = file.lower().strip()
 
             # BO LIST (header row is the 2nd row -> header=1)
@@ -73,15 +79,19 @@ def process_files(validation_errors, all_locations, start_date, end_date, total_
                 ]
                 bo_df = read_file(file_path, header=1)
                 try:
-                    bo_df.columns = custom_headers[:bo_df.shape[1]]
+                    bo_df.columns = custom_headers
+                    #[:bo_df.shape[1]]
                 except:
                     bo_df = pd.concat(pd.read_html(file_path, header=1), ignore_index=True)
-                    bo_df.columns = custom_headers[:bo_df.shape[1]]
-
+                    bo_df.columns = custom_headers
+                    #[:bo_df.shape[1]]
+                bo_df['PO DATE'] = normalize_excel_like_date(bo_df['PO DATE'])
+                #st.write(bo_df.head(2))
                 if bo_df is None or bo_df.empty:
                     validation_errors.append(f"{location}: Unable to read BO LIST -> {file}")
                     continue
-                bo_df.columns = custom_headers[:bo_df.shape[1]]
+                bo_df.columns = custom_headers
+                #[:bo_df.shape[1]]
 
                 required_cols = ['ORDER NO', 'PART NO_CURRENT', 'PO DATE', 'QUANTITY_CURRENT', 'PROCESSING_ALLOCATION']
                 missing = [c for c in required_cols if c not in bo_df.columns]
@@ -100,54 +110,16 @@ def process_files(validation_errors, all_locations, start_date, end_date, total_
             if fl.startswith("stock"):
                 sd = read_file(file_path, header=0)
                 if sd is None or sd.empty:
-                    validation_errors.append(f"{location}: Unable to read Stock -> {file}")
-                    continue
+                    sd = pd.concat(pd.read_html(file_path, header=0), ignore_index=True)
+                    if sd is None or sd.empty:
+                        validation_errors.append(f"{location}: Unable to read Stock -> {file}")
+                        continue
                 sd['Brand'] = brand
                 sd['Dealer'] = dealer
                 sd['Location'] = location
                 sd['__source_file__'] = file
                 Stock_data.append(sd)
                 
-              # # choose part / qty columns
-                # part_col = next((c for c in STOCK_PART_COLS if c in sd.columns), None)
-                # qty_col  = next((c for c in STOCK_QTY_COLS if c in sd.columns), None)
-                # if not part_col or not qty_col:
-                #     validation_errors.append(f"{location}: Stock file missing part/qty columns -> {file}")
-                #     continue
-
-                # sd['Brand'] = brand
-                # sd['Dealer'] = dealer
-                # sd['Location'] = location
-                # sd['__source_file__'] = file
-
-                # # Map PART TYPE -> New partcat
-                # if 'PART TYPE' in sd.columns:
-                #     sd['PART TYPE'] = sd['PART TYPE'].astype(str).str.strip()
-                #     sd['New partcat'] = sd['PART TYPE'].str.upper().map({'X': 'Spares','Y': 'Spares', 'A': 'Accessories'})
-                # else:
-                #     sd['New partcat'] = None
-
-                # # category filter
-                # # if select_categories!='All':
-                # #     sel = set([str(x).strip().lower() for x in select_categories])
-                # #     sd = sd[sd['New partcat'].astype(str).str.lower().isin(sel)]
-
-                # if select_categories==['Spares']:
-                #   sd = sd[sd['New partcat'].isin(select_categories)]
-                # elif select_categories==['Accessories']:
-                #   sd = sd[sd['New partcat'].isin(select_categories)]
-                # elif select_categories==['Spares','Accessories']:
-                #   sd = sd[sd['New partcat'].isin(select_categories)]
-                # elif select_categories==['All']:
-                #   sd=sd.copy()
-                  
-                # out = sd[['Brand', 'Dealer', 'Location', part_col, qty_col]].copy()
-                # out.rename(columns={part_col: 'Partnumber', qty_col: 'Qty'}, inplace=True)
-                # out['Partnumber']=out['Partnumber'].astype(str).str.strip()
-                # out['Qty'] = to_num(out['Qty']).astype(float)
-               
-                # Stock_data.append(out)
-                # continue
 
             # RECEIVING PENDING DETAIL (header=1)
             if fl.startswith("receiving pending detail"):
@@ -158,8 +130,13 @@ def process_files(validation_errors, all_locations, start_date, end_date, total_
                         'LANDED COST','ORDER DATE','RECEIVING DATE','STATUS']
                 df = read_file(file_path, header=1)
                 if df is None or df.empty:
-                    continue
+                    df = pd.concat(pd.read_html(file_path, header=1), ignore_index=True)
+                    
+                    if df is None or df.empty:
+                        validation_errors.append(f"{location}: Unable to read Receiving Pending Detail -> {file}")
+                        continue
                 df.columns = cols[:df.shape[1]]
+                df['ORDER DATE'] = normalize_excel_like_date(df['ORDER DATE'])
                 df['__source_file__'] = file
                 df['Brand'] = brand
                 df['Dealer'] = dealer
@@ -175,13 +152,17 @@ def process_files(validation_errors, all_locations, start_date, end_date, total_
                         'SHIPPED INFORMATION_FREIGHT AMT','SHIPPED INFORMATION_SGST AMT','SHIPPED INFORMATION_IGST AMT',
                         'SHIPPED INFORMATION_TCS AMT','SHIPPED INFORMATION_TAX AMOUNT']
                 df = read_file(file_path, header=2)
-                if df is not None and not df.empty:
-                    df.columns = cols[:df.shape[1]]
-                    df['__source_file__'] = file
-                    df['Brand'] = brand
-                    df['Dealer'] = dealer
-                    df['Location'] = location
-                    Receving_Pending_list.append(df)
+                if df is None or df.empty:
+                    df = pd.concat(pd.read_html(file_path, header=2), ignore_index=True)
+                    if df is None or df.empty:
+                        validation_errors.append(f"{location}: Unable to read Receiving Pending List -> {file}")
+                        continue
+                df.columns = cols[:df.shape[1]]
+                df['__source_file__'] = file
+                df['Brand'] = brand
+                df['Dealer'] = dealer
+                df['Location'] = location
+                Receving_Pending_list.append(df)
                 continue
 
             # RECEIVING TODAY LIST (header=2)
@@ -192,7 +173,11 @@ def process_files(validation_errors, all_locations, start_date, end_date, total_
                         'SHIPPED INFORMATION_FREIGHT AMT','SHIPPED INFORMATION_SGST AMT','SHIPPED INFORMATION_IGST AMT',
                         'SHIPPED INFORMATION_TCS AMT','SHIPPED INFORMATION_TAX AMOUNT']
                 df = read_file(file_path, header=2)
-                if df is not None and not df.empty:
+                if df is  None or  df.empty:
+                    df = pd.concat(pd.read_html(file_path, header=2), ignore_index=True)
+                    if df is None or df.empty:
+                        validation_errors.append(f"{location}: Unable to read Receiving Today List -> {file}")
+                        continue
                     df.columns = cols[:df.shape[1]]
                     df['__source_file__'] = file
                     df['Brand'] = brand
@@ -209,8 +194,13 @@ def process_files(validation_errors, all_locations, start_date, end_date, total_
                         'ITAX(%)','TAX(%)','HSN CODE','TAX AMT','FRT/INS','SGST AMT','CGST AMT','IGST AMT','COMP CESS AMT',
                         'LANDED COST','ORDER DATE','RECEIVING DATE','STATUS']
                 df = read_file(file_path, header=1)
-                if df is not None and not df.empty:
+                if df is  None or  df.empty:
+                    df = pd.concat(pd.read_html(file_path, header=1), ignore_index=True)
+                    if df is None or df.empty:
+                        validation_errors.append(f"{location}: Unable to read Receiving Today Detail -> {file}")
+                        continue    
                     df.columns = cols[:df.shape[1]]
+                    df['ORDER DATE'] = normalize_excel_like_date(df['ORDER DATE'])
                     df['__source_file__'] = file
                     df['Brand'] = brand
                     df['Dealer'] = dealer
@@ -224,7 +214,11 @@ def process_files(validation_errors, all_locations, start_date, end_date, total_
                         'SEND DEALER','ITEM_REQ','ITEM_SEND','QUANTITY_REQ','QUANTITY_SEND','AMOUNT','AMOUNT2','TAXABLE AMT',
                         'SGST AMT','CGST AMT','IGST AMT','COMP CESS AMT','STATUS']
                 df = read_file(file_path, header=1)
-                if df is not None and not df.empty:
+                if df is  None or  df.empty:
+                    df = pd.concat(pd.read_html(file_path, header=1), ignore_index=True)
+                    if df is None or df.empty:
+                        validation_errors.append(f"{location}: Unable to read Transfer List -> {file}")
+                        continue
                     df.columns = cols[:df.shape[1]]
                     df['__source_file__'] = file
                     df['Brand'] = brand
@@ -236,7 +230,11 @@ def process_files(validation_errors, all_locations, start_date, end_date, total_
             # TRANSFER DETAIL (header=0)
             if fl.startswith("transfer detail"):
                 df = read_file(file_path, header=0)
-                if df is not None and not df.empty:
+                if df is  None or  df.empty:
+                    df = pd.concat(pd.read_html(file_path, header=0), ignore_index=True)
+                    if df is None or df.empty:
+                        validation_errors.append(f"{location}: Unable to read Transfer Detail -> {file}")
+                        continue
                     df['__source_file__'] = file
                     df['Brand'] = brand
                     df['Dealer'] = dealer
